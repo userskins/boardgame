@@ -1,0 +1,53 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Склад с молотка</title><style>
+*{box-sizing:border-box}body{margin:0;background:#ece6d8;color:#212722;font:17px/1.45 system-ui,sans-serif}main{max-width:760px;margin:auto;padding:24px 16px}header{background:repeating-linear-gradient(#243e36 0 19px,#29453c 20px 23px);color:#fff4d7;border-radius:16px;padding:24px}h1{font: bold clamp(34px,7vw,62px)/1 Georgia,serif;margin:8px 0}section,details{background:#fffaf0;border:1px solid #cec6b6;border-radius:14px;padding:18px;margin:14px 0}h2{margin:0 0 12px;font: bold 26px Georgia}button,input{font:inherit;border-radius:8px;padding:10px 14px;margin:4px 4px 4px 0;max-width:100%}input{border:1px solid #8c9189;width:100%}button{background:#275649;border:0;color:white;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid #da952a}#cards{display:flex;flex-wrap:wrap;gap:8px}.card{background:#f5dfaa;border:1px solid #bfa674;padding:12px;border-radius:8px;flex:1 1 125px}.closed{background:#ddd9cd}#error{color:#972e1b}li{margin:5px 0}small{color:#605e54}
+</style><main><header><span>Настольный аукцион · 3–7 игроков</span><h1>Склад с молотка</h1></header>
+<div id="error" role="alert"></div><section id="entry"><h2>Занять место</h2><label>Имя<input id="name" maxlength="24"></label><button id="create">Создать комнату</button><hr><label>Код комнаты<input id="code" maxlength="6"></label><button id="join">Присоединиться</button></section>
+<section id="table" hidden><small id="caption"></small><h2 id="title"></h2><div id="cards"></div><p id="status"></p><div id="controls"></div><ol id="players"></ol></section>
+<details><summary>Как играть</summary><p>У каждого 1500 монет. По очереди каждый дважды становится ведущим. Ведущий видит один дополнительный предмет и назначает цену всего склада. Он может описать находку вслух и блефовать.</p><p>В свой ход предложите стартовую цену или перебейте ставку минимум на 50. Пас выводит из торгов до следующего склада. Победитель платит в банк и получает всё содержимое, включая вещи с расходами на утилизацию. Если все спасовали, склад пропадает.</p><p>Побеждает тот, у кого больше денег и стоимости вещей в сумме. При равенстве победа общая.</p></details></main>
+<script>
+const el=id=>document.getElementById(id);
+let session=JSON.parse(sessionStorage.getItem('auction')||'null'), version=-1, busy=false;
+el('code').value=new URLSearchParams(location.search).get('room')||'';
+async function request(op,extra={}){
+ const response=await fetch('/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...session,op,version,...extra})});
+ const data=await response.json(); if(data.error)throw Error(data.error);return data;
+}
+function button(label,action){const b=document.createElement('button');b.textContent=label;b.onclick=action;el('controls').append(b)}
+async function act(op,extra={}){
+ if(busy)return;busy=true;
+ try{await request(op,extra);el('error').textContent='';await refresh()}catch(e){el('error').textContent=e.message}finally{busy=false}
+}
+for(const op of ['join','create'])el(op).onclick=async()=>{
+ if(busy)return;busy=true;
+ try{session=await request(op,{name:el('name').value,code:el('code').value});sessionStorage.setItem('auction',JSON.stringify(session));await refresh()}catch(e){el('error').textContent=e.message}finally{busy=false}
+};
+function render(s){
+ version=s.version;el('entry').hidden=true;el('table').hidden=false;
+ el('controls').replaceChildren();el('cards').replaceChildren();el('players').replaceChildren();
+ const p=s.players, name=i=>p[i]?.name;
+ el('caption').textContent='Комната '+session.code+(s.round?' · Склад '+s.round+' из '+p.length*2:'');
+ el('title').textContent={lobby:'Игроки за столом',setup:'Осмотр склада',bid:'Торги открыты',sold:'Вскрытие склада',end:'Итоги аукциона'}[s.stage];
+ for(const [i,x] of p.entries()){const li=document.createElement('li');li.textContent=x.name+(i===s.me?' (вы)':'')+' · '+x.cash+' монет · всего '+x.total;el('players').append(li)}
+ for(const [i,c] of s.cards.entries()){const d=document.createElement('div');d.className='card'+(c?'':' closed');d.textContent=c?c[0]+' · '+c[1]+(i===1&&['setup','bid'].includes(s.stage)?' · только ведущему':''):'Закрытый ящик';el('cards').append(d)}
+ let msg='';
+ if(s.stage==='lobby'){
+ msg='Пригласите друзей по одному Wi-Fi. Для старта нужно минимум трое.';
+ const link=document.createElement('input');link.readOnly=true;link.value=location.origin+'/?room='+session.code;link.setAttribute('aria-label','Ссылка для друзей');link.onclick=()=>link.select();el('controls').append(link);
+ if(s.me===0&&p.length>=3)button('Начать игру',()=>act('start'));
+ }else if(s.stage==='setup'||s.stage==='bid'){
+ const setup=s.stage==='setup',myTurn=s.me===(setup?s.host:s.turn);
+ msg=setup?'Стартовую цену назначает '+name(s.host):'Цена '+s.price+' · '+(s.leader==null?'ставок пока нет':'лидирует '+name(s.leader))+' · ходит '+name(s.turn);
+ if(myTurn){const n=document.createElement('input');n.type='number';n.min=setup?50:s.price+(s.leader==null?0:50);n.step=50;n.value=n.min;n.setAttribute('aria-label','Сумма в монетах');el('controls').append(n);
+ button(setup?'Открыть торги':'Поставить',()=>act(setup?'open':'bid',{amount:Number(n.value)}));if(!setup)button('Пас',()=>act('pass'))}
+ }else if(s.stage==='sold'){msg=s.result;if(s.me===s.host)button(s.round===2*p.length?'Подвести итоги':'Следующий склад',()=>act('next'))}
+ else{const best=Math.max(...p.map(x=>x.total));msg='Победа: '+p.filter(x=>x.total===best).map(x=>x.name).join(', ')+' · '+best;button('В другую комнату',reset)}
+ el('status').textContent=msg;
+}
+function reset(){sessionStorage.removeItem('auction');location.replace(location.pathname)}
+async function refresh(){
+ if(!session)return;
+ try{const s=await request('state');if(s.version>version){el('error').textContent='';render(s)}}catch(e){el('error').textContent=e.message;if(['Комната не найдена.','Войдите в комнату.'].includes(e.message))reset()}
+}
+async function poll(){if(!busy)await refresh();setTimeout(poll,900)}poll();
+</script></html>
